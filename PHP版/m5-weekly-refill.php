@@ -79,6 +79,39 @@ function fitTextToLineCount(string $text, int $targetLineCount): string
     return implode("\n", $lines);
 }
 
+function countPrintableLines(string $text): int
+{
+    return count(explode("\n", normalizePrintableText($text)));
+}
+
+function buildOverflowState(string $text, int $printableLimit): array
+{
+    $limit = max(1, $printableLimit);
+    $totalLines = countPrintableLines($text);
+    $overflowCount = max(0, $totalLines - $limit);
+
+    if ($overflowCount > 0) {
+        return [
+            'overflow_count' => $overflowCount,
+            'overflow_start' => $limit + 1,
+            'overflow_end' => $totalLines,
+            'overflow_message' => sprintf(
+                '印刷範囲外の行があります: %d〜%d行 (%d行)',
+                $limit + 1,
+                $totalLines,
+                $overflowCount
+            ),
+        ];
+    }
+
+    return [
+        'overflow_count' => 0,
+        'overflow_start' => 0,
+        'overflow_end' => 0,
+        'overflow_message' => '印刷範囲内です。',
+    ];
+}
+
 function mondayOfWeek(DateTimeImmutable $date): DateTimeImmutable
 {
     $dayOfWeek = (int)$date->format('w'); // 0=Sun..6=Sat
@@ -365,6 +398,10 @@ $state = [
     'selected_ip' => '',
     'new_ip' => '',
     'show_ip_settings' => false,
+    'overflow_count' => 0,
+    'overflow_start' => 0,
+    'overflow_end' => 0,
+    'overflow_message' => '',
 ];
 
 $ipSettings = loadIpSettings();
@@ -380,7 +417,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     $state['fixed_text'] = normalizePrintableText($fixedText);
     $state['template_line_count'] = printableLineCount($state['fixed_text']);
     $state['preview_text'] = applyTemplate($state['fixed_text'], $state['show_markers']);
-    $state['preview_text'] = fitTextToLineCount($state['preview_text'], $state['template_line_count']);
+    $state = array_merge($state, buildOverflowState($state['preview_text'], $state['template_line_count']));
     addLog('Initialized.');
     addLog('Text source: ' . $source);
     addLog('Preview updated.');
@@ -415,7 +452,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             addLog('Text source: ' . $source);
         }
         $state['template_line_count'] = printableLineCount($state['fixed_text']);
-        $state['preview_text'] = fitTextToLineCount($state['preview_text'], $state['template_line_count']);
+        $state = array_merge($state, buildOverflowState($state['preview_text'], $state['template_line_count']));
 
         if ($action === 'open_ip_settings') {
             $state['show_ip_settings'] = true;
@@ -485,7 +522,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             $state['fixed_text'] = normalizePrintableText($fixedText);
             $state['template_line_count'] = printableLineCount($state['fixed_text']);
             $state['preview_text'] = applyTemplate($state['fixed_text'], $state['show_markers']);
-            $state['preview_text'] = fitTextToLineCount($state['preview_text'], $state['template_line_count']);
+            $state = array_merge($state, buildOverflowState($state['preview_text'], $state['template_line_count']));
             addLog('Text source: ' . $source);
 
             if ($action === 'prev_week') {
@@ -498,11 +535,11 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             addLog('Preview updated.');
         } elseif ($action === 'reload') {
             $state['preview_text'] = applyTemplate($state['fixed_text'], $state['show_markers']);
-            $state['preview_text'] = fitTextToLineCount($state['preview_text'], $state['template_line_count']);
+            $state = array_merge($state, buildOverflowState($state['preview_text'], $state['template_line_count']));
             addLog('Preview updated.');
         } elseif ($action === 'toggle_markers') {
             $state['preview_text'] = applyTemplate($state['fixed_text'], $state['show_markers']);
-            $state['preview_text'] = fitTextToLineCount($state['preview_text'], $state['template_line_count']);
+            $state = array_merge($state, buildOverflowState($state['preview_text'], $state['template_line_count']));
             addLog('Marker display: ' . ($state['show_markers'] ? 'ON' : 'OFF'));
             addLog('Preview updated.');
         } elseif ($action === 'toggle_editable') {
@@ -558,6 +595,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     } catch (Throwable $e) {
         addLog('Print failed: ' . $e->getMessage());
     }
+
+    $state = array_merge($state, buildOverflowState($state['preview_text'], $state['template_line_count']));
 }
 
 $logsText = getLogsText();
@@ -635,6 +674,10 @@ textarea {
   font-size: 13px;
   line-height: 1.2;
 }
+.preview-area.out-of-range {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px rgba(180, 35, 24, 0.2);
+}
 .log-area {
   min-height: 230px;
 }
@@ -678,6 +721,10 @@ button.danger {
   color: var(--sub);
   margin-bottom: 8px;
 }
+.notice.overflow {
+  color: var(--danger);
+  font-weight: 700;
+}
 .preview-head {
   display: flex;
   align-items: baseline;
@@ -706,7 +753,8 @@ button.danger {
           <div class="section-title">印刷プレビュー</div>
           <div class="notice">印刷時はこのプレビュー内容が送信されます。</div>
         </div>
-        <textarea id="preview_text" class="preview-area" name="preview_text" data-line-count="<?= h((string)$state['template_line_count']) ?>" <?= $state['editable'] ? '' : 'readonly' ?>><?= h($state['preview_text']) ?></textarea>
+        <textarea id="preview_text" class="preview-area<?= $state['overflow_count'] > 0 ? ' out-of-range' : '' ?>" name="preview_text" data-line-count="<?= h((string)$state['template_line_count']) ?>" <?= $state['editable'] ? '' : 'readonly' ?>><?= h($state['preview_text']) ?></textarea>
+        <div id="overflow_notice" class="notice<?= $state['overflow_count'] > 0 ? ' overflow' : '' ?>"><?= h($state['overflow_message']) ?></div>
       </section>
 
       <section class="right-col">
@@ -792,25 +840,34 @@ function normalizeNewlines(text) {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
-function fitPreviewLineCount() {
+function countLinesForPreview(text) {
+  let normalized = normalizeNewlines(text);
+  if (!normalized.endsWith('\n')) normalized += '\n';
+  return normalized.split('\n').length;
+}
+
+function updateOverflowIndicator() {
   const preview = document.getElementById('preview_text');
   if (!preview) return;
+  const notice = document.getElementById('overflow_notice');
+  if (!notice) return;
 
   const target = parseInt(preview.dataset.lineCount || '0', 10);
   if (!Number.isFinite(target) || target < 1) return;
 
-  let text = normalizeNewlines(preview.value);
-  if (!text.endsWith('\n')) text += '\n';
+  const total = countLinesForPreview(preview.value);
+  const overflow = Math.max(0, total - target);
 
-  let lines = text.split('\n');
-  if (lines.length > target) {
-    lines = lines.slice(0, target);
+  if (overflow > 0) {
+    const start = target + 1;
+    notice.textContent = `印刷範囲外の行があります: ${start}〜${total}行 (${overflow}行)`;
+    notice.classList.add('overflow');
+    preview.classList.add('out-of-range');
+  } else {
+    notice.textContent = '印刷範囲内です。';
+    notice.classList.remove('overflow');
+    preview.classList.remove('out-of-range');
   }
-  while (lines.length < target) {
-    lines.push('');
-  }
-
-  preview.value = lines.join('\n');
 }
 
 function autoResizePreview() {
@@ -821,12 +878,12 @@ function autoResizePreview() {
 }
 
 window.addEventListener('load', () => {
-  fitPreviewLineCount();
+  updateOverflowIndicator();
   autoResizePreview();
 });
 window.addEventListener('resize', autoResizePreview);
 document.getElementById('preview_text')?.addEventListener('input', () => {
-  fitPreviewLineCount();
+  updateOverflowIndicator();
   autoResizePreview();
 });
 </script>
